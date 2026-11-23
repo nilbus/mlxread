@@ -81,11 +81,76 @@ final class TextChunkerTests: XCTestCase {
         for chunk in chunks {
             XCTAssertLessThanOrEqual(chunk.count, 600)
         }
-        XCTAssertEqual(chunks.joined().count, 1500)
+        // The trailing period ends the unit like a sentence.
+        XCTAssertEqual(chunks.joined(), monster + ".")
     }
 
     func testDeterminism() {
         let text = "One. Two. Three.\n\nFour five six. Seven."
         XCTAssertEqual(TextChunker.chunk(text), TextChunker.chunk(text))
+    }
+
+    // MARK: - Pauses and sentence endings
+
+    func testParagraphEndsGetParagraphPauseAndFinalChunkNone() {
+        let chunks = TextChunker.chunks("First paragraph.\n\nSecond paragraph.\n\nThird.")
+        XCTAssertEqual(chunks, [
+            TextChunk(text: "First paragraph.", pauseAfter: .paragraph),
+            TextChunk(text: "Second paragraph.", pauseAfter: .paragraph),
+            TextChunk(text: "Third.", pauseAfter: .none),
+        ])
+    }
+
+    func testChunksWithinAParagraphHaveNoPause() {
+        let sentence = "This sentence is about fifty characters long okay."
+        let paragraph = Array(repeating: sentence, count: 6).joined(separator: " ")
+        let chunks = TextChunker.chunks(paragraph + "\n\nNext.", targetLength: 120, maximumLength: 200)
+        XCTAssertGreaterThan(chunks.count, 2)
+        XCTAssertEqual(chunks.dropLast(2).map(\.pauseAfter), Array(repeating: .none, count: chunks.count - 2))
+        XCTAssertEqual(chunks[chunks.count - 2].pauseAfter, .paragraph)
+    }
+
+    func testHeadingGetsPeriod() {
+        let chunks = TextChunker.chunks("Getting Started\n\nInstall the app.")
+        XCTAssertEqual(chunks, [
+            TextChunk(text: "Getting Started.", pauseAfter: .paragraph),
+            TextChunk(text: "Install the app.", pauseAfter: .none),
+        ])
+    }
+
+    func testBulletItemsStandAloneWithLinePauses() {
+        let text = "Steps:\n- open the menu\n• choose Settings\n* done!\n\nAfter the list."
+        XCTAssertEqual(TextChunker.chunks(text), [
+            TextChunk(text: "Steps:", pauseAfter: .line),
+            TextChunk(text: "open the menu.", pauseAfter: .line),
+            TextChunk(text: "choose Settings.", pauseAfter: .line),
+            TextChunk(text: "done!", pauseAfter: .paragraph),
+            TextChunk(text: "After the list.", pauseAfter: .none),
+        ])
+    }
+
+    func testNonBulletLinesStillJoinIntoProse() {
+        // Single line breaks without bullets are unchanged: wrapped PDF
+        // lines must keep reading as one sentence.
+        XCTAssertEqual(TextChunker.chunk("a line that wraps\ninto the next line."),
+                       ["a line that wraps into the next line."])
+    }
+
+    func testHyphenWithoutSpaceIsNotABullet() {
+        XCTAssertEqual(TextChunker.chunk("-5 degrees today."), ["-5 degrees today."])
+    }
+
+    func testUnitsEndingInSymbolsGetNoPeriod() {
+        XCTAssertEqual(TextChunker.endingSentence("return []"), "return []")
+        XCTAssertEqual(TextChunker.endingSentence("He said “hi”"), "He said “hi”")
+        XCTAssertEqual(TextChunker.endingSentence("Version 2"), "Version 2.")
+    }
+
+    func testSilenceChunkLength() {
+        let silence = SpeechAudioChunk.silence(seconds: ChunkPause.paragraph.seconds, sampleRate: 24_000, index: 3)
+        XCTAssertEqual(silence?.samples.count, 14_400)
+        XCTAssertEqual(silence?.index, 3)
+        XCTAssertTrue(silence?.samples.allSatisfy { $0 == 0 } ?? false)
+        XCTAssertNil(SpeechAudioChunk.silence(seconds: ChunkPause.none.seconds, sampleRate: 24_000, index: 0))
     }
 }
